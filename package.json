@@ -1,0 +1,28 @@
+{
+  "name": "scribe-express-server",
+  "version": "1.0.0",
+  "description": "Express server with MSSQL connection for Evaa Scribe",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "nodemon src/server.js",
+    "start": "node src/server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@azure/storage-blob": "^12.29.1",
+    "axios": "^1.13.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "form-data": "^4.0.4",
+    "morgan": "^1.10.1",
+    "mssql": "^9.1.1",
+    "multer": "^2.0.2",
+    "mysql2": "^3.15.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}

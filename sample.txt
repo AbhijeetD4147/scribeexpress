@@ -1,0 +1,248 @@
+using Azure.Storage.Blobs;
+using Azure.Storage.Blobs.Models;
+using GBAIProjectAPI.Interface;
+using GBAIProjectAPI.Model;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Metadata;
+using Microsoft.AspNetCore.Mvc;
+using MySqlX.XDevAPI;
+using NAudio.Wave;
+using TagLib;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using Org.BouncyCastle.Ocsp;
+using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Threading.Tasks;
+using static GBAIProjectAPI.Controllers.CustomerController;
+using System.Data.SqlClient;
+using System.Data;
+using GBAIProjectAPI.Models;
+using Microsoft.AspNetCore.Authorization;
+
+namespace GBAIProjectAPI.Controllers
+{
+
+    [Authorize]
+    [Route("api/[controller]")]
+    [ApiController]
+    public class FileUploadController : ControllerBase
+    {
+        private readonly HttpClient _httpClient;
+        private readonly ICustomer _customer;
+        private readonly IConfiguration _configuration;
+        private readonly ILogger<FileUploadController> _logger;
+
+        public FileUploadController(HttpClient httpClient, ICustomer customer, IConfiguration configuration, ILogger<FileUploadController> logger)
+        {
+            var handler = new HttpClientHandler
+            {
+                ServerCertificateCustomValidationCallback = (sender, cert, chain, sslPolicyErrors) => true
+            };
+            _httpClient = new HttpClient(handler)
+            {
+                Timeout = TimeSpan.FromHours(1)
+            };
+
+            _customer = customer;
+            _configuration = configuration;
+            _logger = logger;
+
+        }
+
+
+        private static Dictionary<int, string> patientUploadFolders = new Dictionary<int, string>();
+
+
+        // For react Projects
+        [HttpPost("recording-upload")]
+        [RequestSizeLimit(long.MaxValue)]
+        [DisableRequestSizeLimit]
+        public async Task<IActionResult> RecordingUploadChunkReact([FromBody] UploadRequest uploadRequest)
+        {
+
+
+
+            string jsonString = uploadRequest.JsonResponse.GetRawText();
+
+            var json = JObject.Parse(jsonString);
+            var soapNoteObj = json["soap_note"];
+            string soapNoteString = soapNoteObj?.ToString() ?? string.Empty;
+            var soapNotes = json["soap_note"]?.ToString() ?? string.Empty;
+            if (json["transcript"] != null)
+            {
+                string transcript = json["transcript"].ToString();
+                // Escape actual newline characters to show as \n
+                string escapedTranscript = transcript.Replace("\n", "\\n");
+
+                // Replace in JObject (if you're forwarding the JSON)
+                json["transcript"] = escapedTranscript;
+
+            }
+ 
+
+            var transc = json["transcript"].ToString();
+
+            _logger.LogInformation($"soap API response : {uploadRequest.JsonResponse}");
+
+            // Logging response details
+            Console.WriteLine($"Message: {json["message"]}");
+            Console.WriteLine($"Transcript: {json["transcript"]}");
+            Console.WriteLine($"SOAP Note: {json["soap_note"]}");
+            Console.WriteLine($"Extracted Elements: {json["element"]}");
+
+
+            string? input = uploadRequest.recordingLength;
+            TimeOnly Reclength;
+
+            string[] formats = { "HH:mm:ss", "mm:ss" };
+
+            if (TimeOnly.TryParseExact(input, formats, null, System.Globalization.DateTimeStyles.None, out Reclength))
+            {
+                // use time
+            }
+            else
+            {
+                  Reclength = new TimeOnly(0, 0, 0);
+            }
+
+                // Create recording object
+                var recording = new AIS_RECORDING
+                {
+                    RECORDING_ID = 0,
+                    ENCOUNTER_ID = uploadRequest.EncounterId,
+                    RECORDING_NAME = uploadRequest.FileName,
+                    RECORDING_GUID = Guid.NewGuid().ToString(),
+                    PATIENT_ID = uploadRequest.PatientId,   // Default to 23 if not provided
+                    DOCTOR_ID = 5,
+                    EXPORTED_TO_ENC = 0,
+                    RECORDING_LENGTH = Reclength,
+                    IS_FINALIZED = false,
+                    IS_REVIEWED = 0,
+                    IS_TRANSCRIPTION_READY = 1,
+                    PATIENT_CONSENT_RECEIVED = 0,
+                    USER_ID = uploadRequest.Userid
+                };
+
+            var saveRecording = await _customer.SAVE_AIS_RECORDING(recording, uploadRequest.AccountId);
+            var taskId = saveRecording.Id;
+
+
+            //var soapNoteParts = soapNotes.Split(new[] { ':' }, StringSplitOptions.RemoveEmptyEntries);
+            var soapNote = new SoapNote
+            {
+                SOAP_ID = 0,
+                RECORDING_ID = taskId,
+                ELEMENT_ID = 7,
+                NOTES = soapNotes,
+                EXPORTED_TO_ENC = false,
+                USER_ID = uploadRequest.Userid.Value,
+                JSON_TEXT = jsonString,
+                ELEMENT_NAME = "SOAP_NOTE"
+            };
+
+            var notesList = new List<SoapNote>();
+            notesList.Add(soapNote);
+
+
+            // Bind all notes to AisSoapNotes object
+            var aisSoapNotes = new AisSoapNotes
+            {
+                NOTES = notesList
+            };
+
+            var saveSoapNotes = await _customer.INSERT_UPDATE_SOAP_NOTES(aisSoapNotes, uploadRequest.AccountId);
+
+            var dictationList = new List<Dictation>();
+            dictationList.Add(new Dictation
+            {
+                DICTATION_ID = 0, // Default value for a new dictation entry
+                RECORDING_ID = taskId, // Ensure taskId is valid
+                IS_DOCTOR = false,//(bool?)(part.Speaker == "Speaker 1" ? true : false), // Explicit cast to byte?
+                IS_PATIENT = false,//(bool?)(part.Speaker == "Speaker 2" ? true : false), // Explicit cast to byte?
+                SPEAKER = "",//part.Speaker == "Speaker 1" ? "Doctor" : "Patient", // Set speaker name
+                DICTATION_TEXT = transc.Trim(), // Trim spaces from each line
+                USER_ID = uploadRequest.Userid ?? 0 // Ensure userId is valid
+            });
+            var dictation = new AisDictation
+            {
+                SPEAKERS = dictationList
+            };
+            // Call AIS_INSERT_UPDATE_AIS_DICTATION function once with the complete dictation data
+            var result = await _customer.AIS_INSERT_UPDATE_AIS_DICTATION(dictation, uploadRequest.AccountId);
+            return Ok(new { Code = 200, Rid = saveRecording.Id, message = "Recording chunk uploaded." });
+
+        }
+ 
+    }
+ 
+}
+  public async Task<dynamic> SAVE_AIS_RECORDING(AIS_RECORDING aIS_RECORDING, string accountId = "")
+  {
+      // Fetch the token from the external API
+      var token = await GetTokenAsyncNew(accountId);
+      if (string.IsNullOrEmpty(token))
+      {
+          throw new Exception("Token not received from external API.");
+      }
+
+      // Set the API key in the HttpClient headers
+      _httpClient.DefaultRequestHeaders.Remove("apiKey");
+      _httpClient.DefaultRequestHeaders.Add("apiKey", "Bearer " + token);
+
+      // Dynamically handle parameters
+      var parameters = aIS_RECORDING.GetType()
+          .GetProperties()
+          .Where(prop => prop.GetValue(aIS_RECORDING) != null) // Include only non-null properties
+          .Select(prop => new
+          {
+              name = prop.Name, // Property name becomes the parameter name
+              value = prop.GetValue(aIS_RECORDING), // Get the value of the property
+              dbType = MapToDbType(prop.PropertyType) // Map the property type to a database type
+          }).ToList();
+
+      var storedProcRequestBody = new
+      {
+          ProcedureName = "AIS_INSERT_UPDATE_AIS_RECORDING",
+          Parameters = parameters
+      };
+
+      // Serialize the request body into JSON
+      var storedProcContent = new StringContent(
+          Newtonsoft.Json.JsonConvert.SerializeObject(storedProcRequestBody),
+          Encoding.UTF8,
+          "application/json"
+      );
+
+      // API endpoint for executing the stored procedure
+      var storedProcApiUrl = _configuration["AppSettings:IOAPIExecUrl"];
+      var storedProcApiResponse = await _httpClient.PostAsync(storedProcApiUrl, storedProcContent);
+
+      // Check if the API call was successful
+      if (!storedProcApiResponse.IsSuccessStatusCode)
+      {
+          var errorResponse = await storedProcApiResponse.Content.ReadAsStringAsync();
+          throw new Exception($"Error calling ExecStoredProcedure API: {errorResponse}");
+      }
+
+      // Parse response
+      var storedProcApiResponseBody = await storedProcApiResponse.Content.ReadAsStringAsync();
+      var responseObject = JObject.Parse(storedProcApiResponseBody);
+
+      if (responseObject["Table"] is JArray tableArray && tableArray.Count > 0)
+      {
+          var recordingId = tableArray.FirstOrDefault()?["RECORDING_ID"];
+          if (recordingId != null && int.TryParse(recordingId.ToString(), out int parsedRecordingId))
+          {
+              // Debug logging to verify parsedRecordingId
+              Console.WriteLine($"Parsed RECORDING_ID: {parsedRecordingId}");
+              return new { Id = parsedRecordingId }; // Return as object with 'Id' property
+          }
+      }
+
+      // Default return if RECORDING_ID is not found
+      return new { Message = "No RECORDING_ID found in response." };
+  }
+
