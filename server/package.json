@@ -1,8 +1,0 @@
-{
-  "dependencies": {
-    "@azure/storage-blob": "^12.29.1",
-    "multer": "^2.0.2",
-    "mysql2": "^3.15.3",
-    "scribe-express-server": "file:.."
-  }
-}
