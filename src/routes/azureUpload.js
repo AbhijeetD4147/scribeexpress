@@ -6,7 +6,7 @@ const { BlobServiceClient, StorageSharedKeyCredential } = require('@azure/storag
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 },
+  limits: { fileSize: 500 * 1024 * 1024 },
 });
 
 function getBlobServiceClient() {

@@ -63,6 +63,10 @@ app.use('/api/sendNotesTomaximeyes', sendNotesRoutes);
 const customerRoutes = require('./routes/customer');
 app.use('/api/Customer', customerRoutes);
 
+// New route: RID generation
+const ridGenerationRoutes = require('./routes/rid generation');
+app.use('/api/rid', ridGenerationRoutes);
+
 // Fallback
 app.get('/', (req, res) => {
   res.json({ name: 'Scribe Express Server', version: '1.0.0' });

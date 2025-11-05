@@ -30,14 +30,55 @@ function buildHttpsAgent() {
 }
 
 function normalizeToken(data) {
-  if (typeof data === 'string') return data;
-  return data?.Token || data?.token || data?.access_token || '';
+  try {
+    if (data == null) return '';
+    if (typeof data === 'string') return data.trim();
+
+    if (typeof data === 'object') {
+      // Envelope with IsToken + Token (current upstream format)
+      if (data.IsToken === true && typeof data.Token === 'string') return data.Token;
+
+      // Common fields
+      if (typeof data.Token === 'string') return data.Token;
+      if (typeof data.token === 'string') return data.token;
+      if (typeof data.access_token === 'string') return data.access_token;
+
+      // Nested shapes often returned by HTTP clients
+      if (data.data && typeof data.data === 'object') {
+        const inner = data.data;
+        if (typeof inner.Token === 'string') return inner.Token;
+        if (typeof inner.token === 'string') return inner.token;
+        if (typeof inner.access_token === 'string') return inner.access_token;
+      }
+      if (data.result && typeof data.result === 'object') {
+        const inner = data.result;
+        if (typeof inner.Token === 'string') return inner.Token;
+        if (typeof inner.token === 'string') return inner.token;
+        if (typeof inner.access_token === 'string') return inner.access_token;
+      }
+
+      // Array of tokens
+      if (Array.isArray(data) && data.length > 0) {
+        const first = data[0];
+        if (typeof first === 'string') return first.trim();
+        if (first && typeof first.Token === 'string') return first.Token;
+        if (first && typeof first.token === 'string') return first.token;
+        if (first && typeof first.access_token === 'string') return first.access_token;
+      }
+    }
+    return '';
+  } catch {
+    return '';
+  }
 }
 
 async function fetchIoToken() {
   ensureConfig();
   const url = `${AISCRIBE_API_BASE.replace(/\/$/, '')}/api/Customer/GetTokenAsyncNew?accountId=${encodeURIComponent(ACCOUNT_ID || '')}`;
   const httpsAgent = buildHttpsAgent();
+if (process.env.ALLOW_INSECURE_TLS === 'true') {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+}
 
   const headers = { accept: '*/*' }; // no bearer per your request
   const resp = await axios.get(url, {
@@ -113,16 +154,34 @@ function getTokenStatus() {
   };
 }
 
+// tokenManager.js (functions)
+function getSelfBaseUrl() {
+  // Prefer explicit env; fallback to localhost dev
+  const base = process.env.SELF_BASE_URL || 'http://localhost:5000';
+  return String(base).replace(/\/$/, '');
+}
+
 async function fetchIoTokenForAccount(accountId) {
   ensureConfig();
   const id = String(accountId || '').trim();
   if (!id) throw new Error('accountId is required');
 
-  const url = `${AISCRIBE_API_BASE.replace(/\/$/, '')}/api/Customer/GetTokenAsyncNew?accountId=${encodeURIComponent(String(accountId || '').trim())}`;
-  const httpsAgent = buildHttpsAgent();
+  const base = getSelfBaseUrl();
+  const url = `${base}/api/Customer/GetTokenAsyncNew?accountId=${encodeURIComponent(id)}`;
 
-  const headers = { accept: '*/*' }; // no bearer per your request
-  const resp = await axios.get(url, {
+  const httpsAgent = (() => {
+    try {
+      const isHttps = /^https:/i.test(base);
+      return isHttps && process.env.ALLOW_INSECURE_TLS === 'true'
+        ? new (require('https').Agent)({ rejectUnauthorized: false })
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+
+  const headers = { accept: '*/*' };
+  const resp = await require('axios').get(url, {
     headers,
     timeout: 10000,
     httpsAgent,
@@ -137,6 +196,8 @@ async function fetchIoTokenForAccount(accountId) {
   const tokenStr = normalizeToken(resp.data);
   if (!tokenStr) throw new Error('Empty token from GetTokenAsyncNew');
 
+  console.log("IO Token",tokenStr)
+
   return String(tokenStr);
 }
 
@@ -149,4 +210,5 @@ module.exports = {
   invalidateAuthToken,
   getTokenStatus,
   fetchIoTokenForAccount,
+  normalizeToken,
 };
