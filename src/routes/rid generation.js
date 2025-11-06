@@ -17,18 +17,24 @@ function mapToDbType(value) {
   return 'VarChar';
 }
 
-function getSelfBaseUrl() {
-  const base = process.env.SELF_BASE_URL || 'http://localhost:5000';
-  return String(base).replace(/\/$/, '');
+// Adjust base URL selection to avoid localhost on Render
+function getSelfBaseUrl(req) {
+  const envBase = process.env.SELF_BASE_URL;
+  const runtimeBase = `${req.protocol}://${req.get('host')}`;
+  return String(envBase || runtimeBase || 'http://localhost:5000').replace(/\/$/, '');
 }
 
+// Prefer AISCRIBE_API_BASE or the server’s own public URL when acquiring apiKey
 async function acquireApiKey(req, accountId) {
   const incomingApiKey =
     req.headers.apikey || req.headers['x-api-key'] || req.headers['apiKey'] || req.headers['apikey'];
   if (incomingApiKey) return String(incomingApiKey);
 
-  const base = getSelfBaseUrl();
+  // Prefer external AIScribe API if configured; else call our own Customer route via runtime base
+  const externalBase = process.env.AISCRIBE_API_BASE ? process.env.AISCRIBE_API_BASE.replace(/\/$/, '') : null;
+  const base = externalBase || getSelfBaseUrl(req);
   const url = `${base}/api/Customer/GetTokenAsyncNew?accountId=${encodeURIComponent(String(accountId || '').trim())}`;
+
   const isHttps = /^https:/i.test(base);
   const httpsAgent =
     isHttps && process.env.ALLOW_INSECURE_TLS === 'true'
