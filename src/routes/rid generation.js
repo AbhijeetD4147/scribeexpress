@@ -34,14 +34,13 @@ async function acquireApiKey(req, accountId) {
     isHttps && process.env.ALLOW_INSECURE_TLS === 'true'
       ? new https.Agent({ rejectUnauthorized: false })
       : undefined;
-console.log(`Acquiring API key for account ${accountId} from ${url}`);
+
   const resp = await axios.get(url, {
     headers: { accept: '*/*' },
     httpsAgent,
     timeout: 10000,
     validateStatus: () => true,
   });
-  console.log(`GetTokenAsyncNew response: ${resp.status} ${JSON.stringify(resp.data)}`);
   if (resp.status < 200 || resp.status >= 300) {
     const body = typeof resp.data === 'string' ? resp.data : JSON.stringify(resp.data);
     throw new Error(`GetTokenAsyncNew failed: ${resp.status} ${body}`);
