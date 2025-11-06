@@ -17,36 +17,31 @@ function mapToDbType(value) {
   return 'VarChar';
 }
 
-// Adjust base URL selection to avoid localhost on Render
-function getSelfBaseUrl(req) {
-  const envBase = process.env.SELF_BASE_URL;
-  const runtimeBase = `${req.protocol}://${req.get('host')}`;
-  return String(envBase || runtimeBase || 'http://localhost:5000').replace(/\/$/, '');
+function getSelfBaseUrl() {
+  const base = process.env.SELF_BASE_URL || 'http://localhost:5000';
+  return String(base).replace(/\/$/, '');
 }
 
-// Prefer AISCRIBE_API_BASE or the server’s own public URL when acquiring apiKey
 async function acquireApiKey(req, accountId) {
   const incomingApiKey =
     req.headers.apikey || req.headers['x-api-key'] || req.headers['apiKey'] || req.headers['apikey'];
   if (incomingApiKey) return String(incomingApiKey);
 
-  // Prefer external AIScribe API if configured; else call our own Customer route via runtime base
-  const externalBase = process.env.AISCRIBE_API_BASE ? process.env.AISCRIBE_API_BASE.replace(/\/$/, '') : null;
-  const base = externalBase || getSelfBaseUrl(req);
+  const base = getSelfBaseUrl();
   const url = `${base}/api/Customer/GetTokenAsyncNew?accountId=${encodeURIComponent(String(accountId || '').trim())}`;
-
   const isHttps = /^https:/i.test(base);
   const httpsAgent =
     isHttps && process.env.ALLOW_INSECURE_TLS === 'true'
       ? new https.Agent({ rejectUnauthorized: false })
       : undefined;
-
+console.log(`Acquiring API key for account ${accountId} from ${url}`);
   const resp = await axios.get(url, {
     headers: { accept: '*/*' },
     httpsAgent,
     timeout: 10000,
     validateStatus: () => true,
   });
+  console.log(`GetTokenAsyncNew response: ${resp.status} ${JSON.stringify(resp.data)}`);
   if (resp.status < 200 || resp.status >= 300) {
     const body = typeof resp.data === 'string' ? resp.data : JSON.stringify(resp.data);
     throw new Error(`GetTokenAsyncNew failed: ${resp.status} ${body}`);
