@@ -43,8 +43,9 @@ router.post("/process_audio_upload", upload.single("file"), async (req, res) => 
       return res.status(400).json({ error: "No file uploaded" });
     }
 
-    // NEW: pick up Rid and AccountId for Azure upload path
-    const rid = Number(req.body?.rid ?? req.query?.rid ?? 0);
+    // Accept both 'recordingId' (preferred) and 'rid' for compatibility
+    const recordingId =
+      Number(req.body?.recordingId ?? req.query?.recordingId ?? req.body?.rid ?? req.query?.rid ?? 0);
     const accountId = String(req.body?.accountId ?? req.query?.accountId ?? "").trim();
     const fileName = String(req.body?.fileName ?? req.file.originalname ?? "audio.ogg").trim();
 
@@ -55,11 +56,15 @@ router.post("/process_audio_upload", upload.single("file"), async (req, res) => 
       contentType: req.file.mimetype,
     });
 
-    // NEW: Fire-and-forget Azure upload, using accountId/rid/guid.ogg
-    if (Number.isFinite(rid) && rid > 0 && accountId) {
+    // NEW: keep track of an Azure GUID (for RECORDING_GUID)
+    let recordingGuid = null;
+
+    // NEW: Fire-and-forget Azure upload, using accountId/recordingId/guid.ogg
+    if (Number.isFinite(recordingId) && recordingId > 0 && accountId) {
       const containerName = process.env.AZURE_CONTAINER_NAME || "audio-chunks";
       const guid = crypto.randomUUID();
-      const blobName = `${accountId}/${rid}/${guid}.ogg`;
+      recordingGuid = guid; // capture for later DB save
+      const blobName = `${accountId}/${recordingId}/${guid}.ogg`;
 
       (async () => {
         try {
@@ -76,7 +81,7 @@ router.post("/process_audio_upload", upload.single("file"), async (req, res) => 
         }
       })();
     } else {
-      console.warn("[process_audio_upload] Skipping Azure upload: rid/accountId missing or invalid.", { rid, accountId });
+      console.warn("[process_audio_upload] Skipping Azure upload: recordingId/accountId missing or invalid.", { recordingId, accountId });
     }
 
     // Forward to Python API
@@ -86,13 +91,12 @@ router.post("/process_audio_upload", upload.single("file"), async (req, res) => 
         ...fd.getHeaders(),
         Accept: "application/json",
       },
-      httpsAgent, // 👈 attach the custom agent here
+      httpsAgent,
       maxContentLength: Infinity,
       maxBodyLength: Infinity,
       validateStatus: () => true,
     });
 
-    // Normalize response to always return JSON
     const normalize = (raw) => {
       if (raw == null) return { message: "Empty response from processing service" };
       if (typeof raw === "string") {
@@ -107,8 +111,55 @@ router.post("/process_audio_upload", upload.single("file"), async (req, res) => 
       }
       return raw;
     };
-
     const payload = normalize(resp.data);
+
+    // NEW: Build AIS_RECORDING payload and call recording-upload internally
+    try {
+      const aIS_RECORDING = {
+        RECORDING_ID: recordingId,
+        ENCOUNTER_ID: Number.parseInt(String(req.body?.encounterId ?? 0), 10),
+        RECORDING_NAME: fileName,
+        RECORDING_GUID: String(recordingGuid ?? ""),
+        PATIENT_ID: String(req.body?.patientId ?? ""),
+        DOCTOR_ID: String(req.body?.doctorId ?? ""),
+        EXPORTED_TO_ENC: false,
+        RECORDING_LENGTH: String(req.body?.recordingLength ?? ""),
+        IS_FINALIZED: String(req.body?.isFinalized ?? "false") === "true",
+        IS_REVIEWED: String(req.body?.isReviewed ?? "false") === "true",
+        IS_TRANSCRIPTION_READY: String(req.body?.isTranscriptionReady ?? "false") === "true",
+        PATIENT_CONSENT_RECEIVED: String(req.body?.patientConsentReceived ?? "false") === "true",
+        USER_ID: Number.parseInt(String(req.body?.userId ?? 0), 10),
+        IS_PARTIAL: String(req.body?.isPartial ?? "false") === "true",
+        // Pass Python response to allow SOAP/DICTATION post-saves
+        jsonResponse: payload,
+        // Optional: allow body-based accountId (in addition to query)
+        accountId: accountId,
+      };
+
+      const internalUrl = `${req.protocol}://${req.get("host")}/api/FileUpload/recording-upload`;
+      const apiKeyHeader =
+        req.headers.apikey || req.headers["x-api-key"] || req.headers["apiKey"] || undefined;
+
+      const saveResp = await axios.post(
+        internalUrl,
+        aIS_RECORDING,
+        {
+          headers: {
+            "content-type": "application/json",
+            accept: "*/*",
+            ...(apiKeyHeader ? { apikey: String(apiKeyHeader) } : {}),
+          },
+          params: { accountId },
+          httpsAgent,
+          validateStatus: () => true,
+        }
+      );
+      console.log(`[process_audio_upload] recording-upload <- ${saveResp.status} ${saveResp.statusText}`);
+    } catch (saveErr) {
+      console.error("[process_audio_upload] recording-upload internal call failed:", saveErr?.message || saveErr);
+    }
+
+    // Return Python payload to client (unchanged behavior)
     return res.status(resp.status).json(payload);
   } catch (err) {
     console.error("[audio process] proxy error:", err);
