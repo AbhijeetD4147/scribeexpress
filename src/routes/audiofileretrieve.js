@@ -27,8 +27,14 @@ router.get("/merged-audio-url", async (req, res) => {
     return res.status(400).json({ error: "Missing recordingId or accountId" });
   }
 
-  // Optional fast-path: client can pass known blobPath to skip listing
+  // Optional fast-paths from client
   const blobPathParam = typeof req.query.blobPath === "string" ? req.query.blobPath.replace(/^\/+/, "") : "";
+  const guidParamRaw = String(req.query.guid ?? req.query.RECORDING_GUID ?? "").trim();
+  const guidParam = guidParamRaw ? guidParamRaw.replace(/^\//, "") : "";
+
+  // NEW: allow caller to prefer a format (wav or ogg)
+  const formatRaw = String(req.query.format ?? "").toLowerCase();
+  const preferredExt = formatRaw === "wav" ? "wav" : formatRaw === "ogg" ? "ogg" : null;
 
   try {
     let containerClient;
@@ -59,18 +65,87 @@ router.get("/merged-audio-url", async (req, res) => {
       });
     }
 
+    // Prefer explicit blob path or GUID-derived path
     let blobName = blobPathParam || null;
 
-    // If blob path not provided, list to find first .ogg under prefix
-    if (!blobName) {
-      const prefix = `${accountId}/${recordingId}`;
-      for await (const blob of containerClient.listBlobsFlat({ prefix })) {
-        if (blob.name.toLowerCase().endsWith(".ogg")) {
-          blobName = blob.name;
-          break;
+    // Helper to resolve by trying candidate names
+    const tryResolveByCandidates = async (candidates) => {
+      for (const name of candidates) {
+        const blobClient = containerClient.getBlobClient(name);
+        try {
+          const exists = await blobClient.exists();
+          if (exists) return name;
+        } catch {
+          // ignore and continue
         }
       }
+      return null;
+    };
+
+    if (!blobName && guidParam) {
+      const base = `${accountId}/${recordingId}/${guidParam.replace(/\.(ogg|wav)$/i, "")}`;
+      const candidates = preferredExt
+        ? [`${base}.${preferredExt}`]
+        : [`${base}.wav`, `${base}.ogg`];
+      blobName = await tryResolveByCandidates(candidates);
     }
+
+    // If blob path not provided and no GUID or not found, list under prefix
+    // if (!blobName) {
+    //   const prefix = `${accountId}/${recordingId}`;
+    //   let foundWav = null;
+    //   let foundOgg = null;
+    //   for await (const blob of containerClient.listBlobsFlat({ prefix })) {
+    //     const name = blob.name.toLowerCase();
+    //     if (name.endsWith(".wav") && !foundWav) foundWav = blob.name;
+    //     if (name.endsWith(".ogg") && !foundOgg) foundOgg = blob.name;
+    //     // Short-circuit if preferred found
+    //     if (preferredExt === "wav" && foundWav) break;
+    //     if (preferredExt === "ogg" && foundOgg) break;
+    //   }
+    //   blobName =
+    //     preferredExt === "wav" ? (foundWav || foundOgg) :
+    //     preferredExt === "ogg" ? (foundOgg || foundWav) :
+    //     (foundWav || foundOgg);
+    // }
+
+
+        // If blob path not provided and no GUID or not found, list under prefix
+    if (!blobName) {
+      const prefix = `${accountId}/${recordingId}`;
+      let latestBlob = null;
+
+      // list all blobs under the prefix
+      for await (const blob of containerClient.listBlobsFlat({ prefix })) {
+        const name = blob.name.toLowerCase();
+        const isAudio = name.endsWith(".wav") || name.endsWith(".ogg");
+
+        if (!isAudio) continue; // skip non-audio
+
+        // Check if preferred extension matches (if specified)
+        if (preferredExt && !name.endsWith(`.${preferredExt}`)) continue;
+
+        // Keep the newest blob by lastModified timestamp
+        if (!latestBlob || blob.properties.lastModified > latestBlob.properties.lastModified) {
+          latestBlob = blob;
+        }
+      }
+
+      // fallback: if no preferredExt found, try any audio file
+      if (!latestBlob && !preferredExt) {
+        for await (const blob of containerClient.listBlobsFlat({ prefix })) {
+          const name = blob.name.toLowerCase();
+          
+            if (!latestBlob || blob.properties.lastModified > latestBlob.properties.lastModified) {
+              latestBlob = blob;
+            }
+          
+        }
+      }
+
+      blobName = latestBlob ? latestBlob.name : null;
+    }
+
 
     if (!blobName) {
       return res.json({ url: null });

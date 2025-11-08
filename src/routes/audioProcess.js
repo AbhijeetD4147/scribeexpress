@@ -48,23 +48,33 @@ router.post("/process_audio_upload", upload.single("file"), async (req, res) => 
       Number(req.body?.recordingId ?? req.query?.recordingId ?? req.body?.rid ?? req.query?.rid ?? 0);
     const accountId = String(req.body?.accountId ?? req.query?.accountId ?? "").trim();
     const fileName = String(req.body?.fileName ?? req.file.originalname ?? "audio.ogg").trim();
+    const lowerName = fileName.toLowerCase();
+    const isWav = lowerName.endsWith(".wav") || (req.file.mimetype || "").includes("wav");
+    const contentType = isWav ? "audio/wav" : "audio/ogg";
 
-    // Prepare form data for Python API
+    // NEW: build FormData for Python processing API
     const fd = new FormData();
     fd.append("file", req.file.buffer, {
       filename: fileName,
-      contentType: req.file.mimetype,
+      contentType: req.file.mimetype || contentType,
     });
 
     // NEW: keep track of an Azure GUID (for RECORDING_GUID)
     let recordingGuid = null;
 
-    // NEW: Fire-and-forget Azure upload, using accountId/recordingId/guid.ogg
+    // NEW: Fire-and-forget Azure upload, using accountId/recordingId/guid (no extension)
     if (Number.isFinite(recordingId) && recordingId > 0 && accountId) {
       const containerName = process.env.AZURE_CONTAINER_NAME || "audio-chunks";
-      const guid = crypto.randomUUID();
-      recordingGuid = guid; // capture for later DB save
-      const blobName = `${accountId}/${recordingId}/${guid}.ogg`;
+      const incomingGuidRaw = String(
+        req.body?.recordingGuid ??
+          req.query?.recordingGuid ??
+          req.body?.RECORDING_GUID ??
+          req.query?.RECORDING_GUID ??
+          ""
+      ).trim();
+      const guid = incomingGuidRaw || crypto.randomUUID();
+      recordingGuid = guid;
+      const blobName = `${accountId}/${recordingId}/${guid}`; // store WITHOUT extension
 
       (async () => {
         try {
@@ -73,7 +83,7 @@ router.post("/process_audio_upload", upload.single("file"), async (req, res) => 
           await containerClient.createIfNotExists();
           const blockBlobClient = containerClient.getBlockBlobClient(blobName);
           await blockBlobClient.uploadData(req.file.buffer, {
-            blobHTTPHeaders: { blobContentType: req.file.mimetype || "audio/ogg" },
+            blobHTTPHeaders: { blobContentType: contentType },
           });
           console.log(`[process_audio_upload] Azure upload completed -> ${blobName}`);
         } catch (azureErr) {

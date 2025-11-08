@@ -51,12 +51,20 @@ router.post('/upload-audio', upload.single('file'), async (req, res) => {
     const containerClient = blobServiceClient.getContainerClient(containerName);
     await containerClient.createIfNotExists();
 
-    const guid = crypto.randomUUID();
-    const blobName = `${accountId}/${recordingId}/${guid}.ogg`;
+    // NEW: reuse provided GUID if present (for re-record flow)
+    const incomingGuidRaw = String(
+      req.body.guid ?? req.body.RECORDING_GUID ?? req.query.guid ?? req.query.RECORDING_GUID ?? ''
+    ).trim();
+    const guid = incomingGuidRaw || crypto.randomUUID();
+
+    const originalName = (req.file.originalname || '').toLowerCase();
+    const isWav = originalName.endsWith('.wav') || (req.file.mimetype || '').includes('wav');
+    const contentType = isWav ? 'audio/wav' : 'audio/ogg';
+    const blobName = `${accountId}/${recordingId}/${guid}`; // store WITHOUT extension
     const blockBlobClient = containerClient.getBlockBlobClient(blobName);
 
     await blockBlobClient.uploadData(req.file.buffer, {
-      blobHTTPHeaders: { blobContentType: req.file.mimetype || 'audio/ogg' },
+      blobHTTPHeaders: { blobContentType: contentType },
     });
 
     return res.status(200).json({ blobPath: blobName });
