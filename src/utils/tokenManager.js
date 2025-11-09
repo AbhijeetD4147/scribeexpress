@@ -166,36 +166,71 @@ async function fetchIoTokenForAccount(accountId) {
   const id = String(accountId || '').trim();
   if (!id) throw new Error('accountId is required');
 
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
   const base = getSelfBaseUrl();
   const url = `${base}/api/Customer/GetTokenAsyncNew?accountId=${encodeURIComponent(id)}`;
 
-  const httpsAgent = (() => {
+  const isHttps = /^https:/i.test(base);
+  const httpsAgent =
+    isHttps && process.env.ALLOW_INSECURE_TLS === 'true'
+      ? new (require('https').Agent)({ rejectUnauthorized: false })
+      : undefined;
+
+  let lastErr = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const isHttps = /^https:/i.test(base);
-      return isHttps && process.env.ALLOW_INSECURE_TLS === 'true'
-        ? new (require('https').Agent)({ rejectUnauthorized: false })
-        : undefined;
-    } catch {
-      return undefined;
+      const resp = await require('axios').get(url, {
+        headers: { accept: '*/*' },
+        timeout: 30000,
+        httpsAgent,
+        validateStatus: () => true,
+      });
+      if (resp.status >= 200 && resp.status < 300) {
+        const tokenStr = normalizeToken(resp.data);
+        if (!tokenStr) throw new Error('Empty token from GetTokenAsyncNew');
+        return String(tokenStr);
+      }
+      const body = typeof resp.data === 'string' ? resp.data : JSON.stringify(resp.data);
+      throw new Error(`GetTokenAsyncNew failed: ${resp.status} ${body}`);
+    } catch (e) {
+      lastErr = e;
+      if (attempt < 2) await sleep(1000 * Math.pow(2, attempt)); // 1s, 2s
     }
-  })();
-
-  const headers = { accept: '*/*' };
-  const resp = await require('axios').get(url, {
-    headers,
-    timeout: 10000,
-    httpsAgent,
-    validateStatus: () => true,
-  });
-
-  if (resp.status < 200 || resp.status >= 300) {
-    const body = typeof resp.data === 'string' ? resp.data : JSON.stringify(resp.data);
-    throw new Error(`GetTokenAsyncNew failed: ${resp.status} ${body}`);
   }
 
-  const tokenStr = normalizeToken(resp.data);
-  if (!tokenStr) throw new Error('Empty token from GetTokenAsyncNew');
+  // Fallback to direct AISCRIBE API if configured
+  const aisBase = (process.env.AISCRIBE_API_BASE || '').replace(/\/$/, '');
+  if (aisBase) {
+    const urlAis = `${aisBase}/api/Customer/GetTokenAsyncNew?accountId=${encodeURIComponent(id)}`;
+    const httpsAgentAis =
+      /^https:/i.test(aisBase) && process.env.ALLOW_INSECURE_TLS === 'true'
+        ? new (require('https').Agent)({ rejectUnauthorized: false })
+        : undefined;
 
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const resp = await require('axios').get(urlAis, {
+          headers: { accept: '*/*' },
+          timeout: 30000,
+          httpsAgent: httpsAgentAis,
+          validateStatus: () => true,
+        });
+        if (resp.status >= 200 && resp.status < 300) {
+          const tokenStr = normalizeToken(resp.data);
+          if (!tokenStr) throw new Error('Empty token from GetTokenAsyncNew');
+          return String(tokenStr);
+        }
+        const body = typeof resp.data === 'string' ? resp.data : JSON.stringify(resp.data);
+        throw new Error(`GetTokenAsyncNew failed: ${resp.status} ${body}`);
+      } catch (e) {
+        lastErr = e;
+        if (attempt < 2) await sleep(1000 * Math.pow(2, attempt));
+      }
+    }
+  }
+
+  throw lastErr || new Error('Failed to fetch IO token');
   console.log("IO Token",tokenStr)
 
   return String(tokenStr);
