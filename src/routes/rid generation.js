@@ -189,7 +189,7 @@ router.post('/generate', async (req, res) => {
       PATIENT_ID: PatientId,
       DOCTOR_ID: 0,
       EXPORTED_TO_ENC: 0,
-      RECORDING_LENGTH: recordingLength,
+      RECORDING_LENGTH: stringify(recordingLength),
       IS_FINALIZED: false,
       IS_REVIEWED: 0,
       IS_TRANSCRIPTION_READY: 1,
